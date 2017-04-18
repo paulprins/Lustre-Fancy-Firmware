@@ -91,7 +91,7 @@ int lightBrightness = 255 * .15;    // Initial Brightness between 0 and 255 (Max
 String lightOn = "false";           // Initial state of the light
 String lightMode = "warm";          // Initial display type
 String customColor = NULL;          // an R,G,B string for every LED to show
-int luxChange = 1500;               // in milleseconds
+int luxChange = 500;               // in milleseconds
 
 bool fetchedEEPROM = false;         // delay fetching the cached values until we know they have been set (to avoid overwriting with defaults)
 int cacheMaxDuration = 60 * 15;     // Second until the cached values are ignored
