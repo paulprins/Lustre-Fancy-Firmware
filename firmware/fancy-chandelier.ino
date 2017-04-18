@@ -87,13 +87,14 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, PIXEL_TYPE);
 
 //
 // Member Variables
-int lightBrightness = 255 * .15; // Initial Brightness between 0 and 255 (Max)
-String lightOn = "false";   // Initial state of the light
-String lightMode = "warm";    // Initial display type
-String customColor = NULL;
-int luxSpeed = 0;   // Distance between the steps
-bool fetchedEEPROM = false;
-int cacheMaxDuration = 60 * 15;  // Keep the lights this way for this # of seconds.
+int lightBrightness = 255 * .15;    // Initial Brightness between 0 and 255 (Max)
+String lightOn = "false";           // Initial state of the light
+String lightMode = "warm";          // Initial display type
+String customColor = NULL;          // an R,G,B string for every LED to show
+int luxChange = 1500;               // in milleseconds
+
+bool fetchedEEPROM = false;         // delay fetching the cached values until we know they have been set (to avoid overwriting with defaults)
+int cacheMaxDuration = 60 * 15;     // Second until the cached values are ignored
 
 
 void setup() {
@@ -116,19 +117,20 @@ void setup() {
     Particle.function("setColor", setColor);
     Particle.function("setLux", setLux);
     Particle.function("setMode",setMode);
+    Particle.function("setLuxSpeed",setLuxSpeed);
+    
     
     Particle.variable("brightness", lightBrightness);  // Expose Variables
     Particle.variable("lightOn", lightOn);  // Expose Variables
     Particle.variable("lightMode", lightMode);
     Particle.variable("customColor", customColor);
-    Particle.variable("luxSpeed", luxSpeed);
+    Particle.variable("luxChange", luxChange);
     Particle.variable("cacheSec", cacheMaxDuration);
 
 
-    
-
-    setLux( String( lightBrightness ) );    // 0: off and 255: Max
+    strip.setBrightness( 0 );   // Ensure the lights start off
     setMode( lightMode );
+    setLux( String( lightBrightness ) );    // 0: off and 255: Max
     toggleLight("1");
 
 
@@ -191,30 +193,64 @@ void loop() {
      */
     int setLux( String newLux ){
         int newLuxInt = newLux.toInt();
-        if( newLuxInt < 0 && newLuxInt > 255 ){
-            return 0;   // Not a valid brightness value
+        int currentLux = strip.getBrightness();     // Current Value
+        int luxDiff = newLuxInt - currentLux;       // Distance between our values
+        if( newLuxInt < 0 || newLuxInt > 255 ){
+            return -1;   // Not a valid brightness value between 0 and 255
+        }else if( luxDiff == 0 ){
+            return 1;   // Already running at this value
         }
 
-        if( luxSpeed == 0 ){
+
+        if( luxChange == 0 ){
+            if( currentLux == 0 ){  setMode( lightMode );   }   // Needed to retrigger the mode after turning off
             strip.setBrightness( newLuxInt );    // 0: off and 255: Max
+            strip.show();
         }else{
-            
-            int currentLux = strip.getBrightness();
-            
-            // Particle.publish( "setLux:", newBrightness, useBrightness );
-            for( int i=0; i<strip.numPixels(); i++) {
-                strip.setBrightness( newLuxInt );    // 0: off and 255: Max
-                strip.show();
-                delay(luxSpeed);
+            // Going to smooth out the brightness change
+            int luxStepSpeed =  luxChange / abs( luxDiff );  // Milleseconds per step based on the desired change
+            if( luxStepSpeed == 0 ){ luxStepSpeed = 1; }
+            Particle.publish("setLux() LuxStepSpeed", String(luxChange) + " / " + String( luxDiff ) + " = " + String(luxStepSpeed)  );
+
+            // Ensure our minimum delay is 20ms to avoid overloading the process
+            int stepSize = 1;
+            if( luxStepSpeed < 20 ){
+                // Particle.publish("setLux() fix step", String( luxStepSpeed ) );
+                while( luxStepSpeed < 20 ){
+                    luxStepSpeed = luxStepSpeed * 2;
+                    stepSize = stepSize * 2;
+                }
+
+                Particle.publish("setLux() fixed step", String( luxStepSpeed ) );
             }
+
+            // Loop over the lux until
+            Particle.publish("setLux()", String( currentLux ) + " to " + String( newLuxInt ) + " with " + String( luxStepSpeed ) + "ms per step, size " + String( stepSize ) + " with luxDiff of " + String( luxDiff ) );
+            bool runStepper = true;
+            bool modeReset = false;
+            int stepLux = currentLux;
+            do {
+                if( luxDiff > 0 ){
+                    stepLux = stepLux + stepSize;  // Step up to the new value
+                    if( stepLux > newLuxInt ){ runStepper = false; }
+                }else{
+                    stepLux = stepLux - stepSize;  // Step down to the new value
+                    if( stepLux < newLuxInt ){ runStepper = false; }
+                }
+
+                strip.setBrightness( stepLux );    // 0: off and 255: Max
+                if( currentLux == 0 && modeReset == false ){  setMode( lightMode );  modeReset = true;  }   // Needed to retrigger the mode after turning off
+                strip.show();
+
+
+                delay(luxStepSpeed);
+            }while( runStepper );
+
+            strip.setBrightness( newLuxInt );    // 0: off and 255: Max
+            strip.show();
         }
 
-        if( strip.getBrightness() != newLuxInt ){
-            return -1;
-        }
 
-
-        strip.show();
         lightBrightness = newLuxInt;
         if( newLuxInt == 0 ){
             lightOn = "false";
@@ -231,14 +267,14 @@ void loop() {
     /*
      * Define the duration in MS between every change in luminocity (stepped by 2)
      */
-    int setLuxSpeed( String newLuxSpeed ){
-        int testing = newLuxSpeed.toInt();
+    int setLuxSpeed( String newLuxDuration ){
+        int testing = round( newLuxDuration.toInt() );
 
-        if( testing > 0 && testing < 1000 ){
+        if( testing < 0 || testing > 60000 ){
             return -1;
         }
 
-        luxSpeed = testing;
+        luxChange = testing;
         pushToEEPROM(); // Save Setting
 
         return 1;
@@ -281,19 +317,19 @@ void loop() {
     int toggleLight( String newState ){
         if( newState == "on" || newState == "1" ){
             Particle.publish( "toggleLight()", "On" );
-            setLux( String( lightBrightness ) );   // Reset this to current value
-            setMode( lightMode );
+            setMode( String( lightMode ) );
+            setLux( String( lightBrightness ) );   // Use function to allow fading in
             lightOn = "true";
         }else if( newState == "off" || newState == "0"){
             Particle.publish( "toggleLight()", "Off" );
-            strip.setBrightness( 0 );
-            // colorAll(strip.Color(0, 0, 0), 50);    // Black/off
+            int tempBright = lightBrightness;   // Temp store the current value to reset after changing it
+            setLux( "0" );   // Use function to engage fading if it exists
+            lightBrightness = tempBright;
             lightOn = "false";
         }else{
             return -1;
         }
 
-        strip.show();
         return 1;
     }
 // Web Functions
@@ -311,7 +347,7 @@ void loop() {
         // String lightOn;  // Do not include this value
         char mode[100]; // lightMode;
         char color[12]; // customColor;
-        int luxSpeed;
+        int luxChange;
     };
 
 
@@ -330,7 +366,7 @@ void loop() {
             configVals.lumens = lightBrightness;
             lightMode.toCharArray(configVals.mode, 100);
             customColor.toCharArray(configVals.color, 12);
-            configVals.luxSpeed = luxSpeed;
+            configVals.luxChange = luxChange;
         EEPROM.put( 20, configVals );
         
         return;
@@ -348,7 +384,7 @@ void loop() {
             lightBrightness = configVals.lumens;
             lightMode = String( configVals.mode );
             customColor = String( configVals.color );
-            luxSpeed  = configVals.luxSpeed;
+            luxChange  = configVals.luxChange;
         }else{
             EEPROM.clear();
         }
