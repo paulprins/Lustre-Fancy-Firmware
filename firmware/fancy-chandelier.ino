@@ -34,10 +34,14 @@
 /* ======================= includes ================================= */
 
 #include "application.h"
+#include "colorRGB.h"
+#include "colorHSL.h"
 #include <neopixel.h> // use for Build IDE
 // #include "neopixel.h" // use for local build
 #include <vector>
 #include <sstream>
+#include <math.h>
+#include <map>
 
 /* ======================= prototypes =============================== */
 
@@ -53,7 +57,7 @@ std::vector<int> SplitStringToInt( String input );
 SYSTEM_MODE(AUTOMATIC);
 
 // IMPORTANT: Set pixel COUNT, PIN and TYPE
-#define PIXEL_COUNT 60
+#define PIXEL_COUNT 139
 #define PIXEL_PIN D2
 #define PIXEL_TYPE WS2812B
 
@@ -87,14 +91,21 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, PIXEL_TYPE);
 
 //
 // Member Variables
-int lightBrightness = 255 * .15;    // Initial Brightness between 0 and 255 (Max)
+int lightBrightness = 250 * 1;    // Initial Brightness between 0 and 255 (Max)
 String lightOn = "false";           // Initial state of the light
-String lightMode = "warm";          // Initial display type
-String customColor = NULL;          // an R,G,B string for every LED to show
+String lightMode = "custom";          // Initial display type
 int luxChange = 500;               // in milleseconds
+int colorHue = 23;                   // This is the H from HSL
+int colorSaturation = 100;          // This is the S from HSL
+int colorLightness = 60;            // This is the L from HSL
 
+// Build out the initial colors
+HSL thisHSL = HSL( colorHue, colorSaturation, colorLightness );
+colorRGB* thisRGB = thisHSL.toRGB();
+
+// Cache values
 bool fetchedEEPROM = false;         // delay fetching the cached values until we know they have been set (to avoid overwriting with defaults)
-int cacheMaxDuration = 60 * 15;     // Second until the cached values are ignored
+int cacheMaxDuration = 60 * 15;     // Second until the cached values are ignored [Defaults to 15 minutes]
 
 
 void setup() {
@@ -112,30 +123,39 @@ void setup() {
     // Grab the variables from EEPROM (Persistent Flash storage)
     pullFromEEPROM();
 
+
+    //
     // Functions to expose to the web
     Particle.function("toggleLight",toggleLight);
-    Particle.function("setColor", setColor);
+    Particle.function("setHue", setHue);
+    Particle.function("setSat", setSaturation);
+    Particle.function("setLight", setLightness);
     Particle.function("setLux", setLux);
-    Particle.function("setMode",setMode);
-    Particle.function("setLuxSpeed",setLuxSpeed);
-    
-    
+
+    Particle.function("setMode", setModeExpose);
+    Particle.function("setLuxSpeed", setLuxSpeed);
+
+
+    //
+    // Variable to expose to the web
     Particle.variable("brightness", lightBrightness);  // Expose Variables
     Particle.variable("lightOn", lightOn);  // Expose Variables
     Particle.variable("lightMode", lightMode);
-    Particle.variable("customColor", customColor);
+    Particle.variable("colorHue", colorHue);
+    Particle.variable("colorSat", colorSaturation);
+    Particle.variable("colorLight", colorLightness);
     Particle.variable("luxChange", luxChange);
     Particle.variable("cacheSec", cacheMaxDuration);
 
 
     strip.setBrightness( 0 );   // Ensure the lights start off
-    setMode( lightMode );
+    setMode( lightMode, false );
     setLux( String( lightBrightness ) );    // 0: off and 255: Max
     toggleLight("1");
 
 
     // Turn off the status LED
-    RGB.brightness(0); // all of the way off (MAX DARK)
+    // RGB.brightness(0); // all of the way off (MAX DARK)
 
 //   strip.setPixelColor(0, strip.Color(255, 0, 255));
 
@@ -157,36 +177,83 @@ void loop() {
 
 //
 // Web Functions
+
     /*
-     * Set a color to use with the "custom" mode. Must be sent as a comma seperated Red,Green,Blue (0-255) value
+     * Set a hue to use with the "custom" mode
      */
-    int setColor( String colorString ){
-        // String must include three comma seperated integers in order of Red, Green Blue.
-        if( colorString.length() == 0 || colorString.indexOf(",") == -1 ){
-            return -1;
-        }
-
-        std::vector<int> RGB = SplitStringToInt( colorString );
-
-        if( RGB.size() != 3 ){
-            Particle.publish("setColor() fail",  "Wrong Size: size " + String( RGB.size() ) + " | " + String(RGB.at(0)) + " " + String(RGB.at(1)));
-            return -1;  // Must be 3 long
-        }
+    int setHue( String hueString ){
+        int hueValue = hueString.toInt();
 
         // Lets make sure every value is valid
-        for(std::vector<int>::const_iterator i = RGB.begin(); i != RGB.end(); ++i) {
-            if( *i < 0 && *i > 255 ){
-                Particle.publish("setColor() fail", "Invalid Number: " + String( *i ) );
-                return -1;  // Contains an invalid value
-            }
+        if( hueValue < 1 || hueValue > 360 ){
+            Particle.publish("setHue() fail", "Invalid Number: " + String( hueValue ) + " | Must be between 0 and 360");
+            return -1;  // Contains an invalid value
         }
 
         // String is good to go!
-        customColor = colorString;
-        setMode( "custom" );
-        
+        colorHue = hueValue;
+        updateHSL();
+
+        setMode( "custom", true );
+
         return 1;  // All the things are broken.
     }
+    
+    
+
+    /*
+     * Set a saturation to use with the "custom" mode
+     */
+    int setSaturation( String satString ){
+        int satValue = satString.toInt();
+        
+        // Lets make sure every value is valid
+        if( satValue < 0 || satValue > 100 ){
+            Particle.publish("setSaturation() fail", "Invalid Number: " + String( satValue ) + " | Must be between 0 and 100");
+            return -1;  // Contains an invalid value
+        }
+
+        // String is good to go!
+        colorSaturation = satValue;
+        updateHSL();
+
+        setMode( "custom", true );
+
+        return 1;  // All the things are broken.
+    }
+    
+    
+
+    /*
+     * Set a saturation to use with the "custom" mode
+     */
+    int setLightness( String lightString ){
+        int lightValue = lightString.toInt();
+        
+        // Lets make sure every value is valid
+        if( lightValue < 0 || lightValue > 100 ){
+            Particle.publish("setLightness() fail", "Invalid Number: " + String( lightValue ) + " | Must be between 0 and 100");
+            return -1;  // Contains an invalid value
+        }
+
+        // String is good to go!
+        colorLightness = lightValue;
+        updateHSL();
+
+        setMode( "custom", true );
+        return 1;  // All the things are broken.
+    }
+
+
+    bool updateHSL(){
+        thisHSL = HSL( colorHue, colorSaturation, colorLightness );
+        thisRGB = thisHSL.toRGB();
+
+        Particle.publish("updateHSL()", "HSL H:" +  String( thisHSL.H ) + " S:" +  String( thisHSL.S ) + " L:" +  String( thisHSL.L ) + " | RGB R:" +  String( thisRGB->R ) + " G:" +  String( thisRGB->G ) + " B:" +  String( thisRGB->B ) );
+
+        return true;
+    }
+
 
     /*
      * Define how bright the light can be using a value between 0 and 255. 0 being off, and 255 being on.
@@ -195,33 +262,35 @@ void loop() {
         int newLuxInt = newLux.toInt();
         int currentLux = strip.getBrightness();     // Current Value
         int luxDiff = newLuxInt - currentLux;       // Distance between our values
-        if( newLuxInt < 0 || newLuxInt > 255 ){
-            return -1;   // Not a valid brightness value between 0 and 255
+        if( newLuxInt < 0 || newLuxInt > 250 ){
+            Particle.publish("setLux() fail", "Must have value between 0 and 250" );
+            return -1;   // Not a valid brightness value between 0 and 250
         }else if( luxDiff == 0 ){
             return 1;   // Already running at this value
         }
 
 
         if( luxChange == 0 ){
-            if( currentLux == 0 ){  setMode( lightMode );   }   // Needed to retrigger the mode after turning off
+            if( currentLux == 0 ){  setMode( lightMode, false );   }   // Needed to retrigger the mode after turning off
             strip.setBrightness( newLuxInt );    // 0: off and 255: Max
+            setMode( lightMode, false );   // Ensure the color doesn't shift
             strip.show();
         }else{
             // Going to smooth out the brightness change
             int luxStepSpeed =  luxChange / abs( luxDiff );  // Milleseconds per step based on the desired change
             if( luxStepSpeed == 0 ){ luxStepSpeed = 1; }
-            Particle.publish("setLux() LuxStepSpeed", String(luxChange) + " / " + String( luxDiff ) + " = " + String(luxStepSpeed)  );
+            // Particle.publish("setLux() LuxStepSpeed", String(luxChange) + " / " + String( luxDiff ) + " = " + String(luxStepSpeed)  );
 
             // Ensure our minimum delay is 20ms to avoid overloading the process
             int stepSize = 1;
-            if( luxStepSpeed < 20 ){
+            if( luxStepSpeed < 5 ){
                 // Particle.publish("setLux() fix step", String( luxStepSpeed ) );
-                while( luxStepSpeed < 20 ){
+                while( luxStepSpeed < 5 ){
                     luxStepSpeed = luxStepSpeed * 2;
                     stepSize = stepSize * 2;
                 }
 
-                Particle.publish("setLux() fixed step", String( luxStepSpeed ) );
+                // Particle.publish("setLux() fixed step", String( luxStepSpeed ) );
             }
 
             // Loop over the lux until
@@ -238,14 +307,15 @@ void loop() {
                     if( stepLux < newLuxInt ){ runStepper = false; }
                 }
 
+                setMode( lightMode, false );   // Ensure the color doesn't shift
                 strip.setBrightness( stepLux );    // 0: off and 255: Max
-                if( currentLux == 0 && modeReset == false ){  setMode( lightMode );  modeReset = true;  }   // Needed to retrigger the mode after turning off
                 strip.show();
 
 
                 delay(luxStepSpeed);
             }while( runStepper );
 
+            setMode( lightMode, false );   // Ensure the color doesn't shift
             strip.setBrightness( newLuxInt );    // 0: off and 255: Max
             strip.show();
         }
@@ -281,27 +351,38 @@ void loop() {
     }
 
 
+    int setModeExpose( String newMode ){
+        return setMode( newMode, true );
+    }
+
     /*
      * Move between presets, or a custom color for the light.
      */
-    int setMode( String newMode ){
+    int setMode( String newMode, bool includeShow ){
+        // Particle.publish( "setMode()", newMode + " | RGB R:" +  String( thisRGB->R ) + " G:" +  String( thisRGB->G ) + " B:" +  String( thisRGB->B ) );
         if( newMode == "bright"){
-            colorAll(strip.Color(255, 255, 255), 50);
+            colorAll(strip.Color(255, 255, 255), 50);   // HSL: X, 100, 100
+        }else if( newMode == "clear"){
+            colorAll(strip.Color(255,180,130), 50);   // HSL: X, 100, 100
         }else if( newMode == "warm"){
-            colorAll(strip.Color(255, 145, 120), 50);
+            colorAll(strip.Color(255,150,60), 50);      // HSL: 25, 90, 66
         }else if( newMode == "rainbow"){
             // rainbow(20);
             rainbowForever( 10 );
         }else if( newMode == "custom"){
             // Use the value stored as customColor (from setColor) to light up the show
-            if( customColor == NULL ){
+            if( colorHue == NULL ){
                 return -1;
             }
 
-            std::vector<int> RGB =  SplitStringToInt( customColor );
-            colorAll(strip.Color( RGB.at(0), RGB.at(1), RGB.at(2)), 50);
+            colorAll(strip.Color( thisRGB->R, thisRGB->G, thisRGB->B), 50);
         }else{
             return -1;
+        }
+
+
+        if( includeShow == false ){
+            return 1;
         }
 
         strip.show();
@@ -317,7 +398,7 @@ void loop() {
     int toggleLight( String newState ){
         if( newState == "on" || newState == "1" ){
             Particle.publish( "toggleLight()", "On" );
-            setMode( String( lightMode ) );
+            setMode( String( lightMode ), false );
             setLux( String( lightBrightness ) );   // Use function to allow fading in
             lightOn = "true";
         }else if( newState == "off" || newState == "0"){
@@ -346,7 +427,9 @@ void loop() {
         int lumens; // lightBrightness;
         // String lightOn;  // Do not include this value
         char mode[100]; // lightMode;
-        char color[12]; // customColor;
+        int hue; // colorHue;
+        int saturation; // colorSaturation;
+        int lightness; // colorLightness;
         int luxChange;
     };
 
@@ -365,7 +448,9 @@ void loop() {
             configVals.epoch = Time.now();
             configVals.lumens = lightBrightness;
             lightMode.toCharArray(configVals.mode, 100);
-            customColor.toCharArray(configVals.color, 12);
+            configVals.hue = colorHue;
+            configVals.saturation = colorSaturation;
+            configVals.lightness = colorLightness;
             configVals.luxChange = luxChange;
         EEPROM.put( 20, configVals );
         
@@ -383,7 +468,9 @@ void loop() {
         if( configVals.epoch != 0 && ( Time.now() - configVals.epoch ) < cacheMaxDuration ){
             lightBrightness = configVals.lumens;
             lightMode = String( configVals.mode );
-            customColor = String( configVals.color );
+            colorHue = configVals.hue;
+            colorSaturation = configVals.saturation;
+            colorLightness = configVals.lightness;
             luxChange  = configVals.luxChange;
         }else{
             EEPROM.clear();
@@ -393,6 +480,9 @@ void loop() {
     }
 // Persist Variables
 //
+
+
+
 
 
 //
