@@ -98,6 +98,7 @@ int luxChange = 500;               // in milleseconds
 int colorHue = 23;                   // This is the H from HSL
 int colorSaturation = 100;          // This is the S from HSL
 int colorLightness = 60;            // This is the L from HSL
+String quickSetting = "";           // Comma seperated string - Mode, Hue, Saturation, Lightness, Brightness, Light Change
 
 // Build out the initial colors
 HSL thisHSL = HSL( colorHue, colorSaturation, colorLightness );
@@ -122,6 +123,7 @@ void setup() {
     //
     // Grab the variables from EEPROM (Persistent Flash storage)
     pullFromEEPROM();
+    updateQuickSetting();
 
 
     //
@@ -146,28 +148,17 @@ void setup() {
     Particle.variable("colorLight", colorLightness);
     Particle.variable("luxChange", luxChange);
     Particle.variable("cacheSec", cacheMaxDuration);
+    Particle.variable("quickSetting", quickSetting );
 
 
     strip.setBrightness( 0 );   // Ensure the lights start off
     setMode( lightMode, false );
     setLux( String( lightBrightness ) );    // 0: off and 255: Max
     toggleLight("1");
-
-
-    // Turn off the status LED
-    // RGB.brightness(0); // all of the way off (MAX DARK)
-
-//   strip.setPixelColor(0, strip.Color(255, 0, 255));
-
-//   rainbowCycle(20);
-
-//   colorAll(strip.Color(0, 255, 255), 50); // Cyan
-    // colorAll(strip.Color(255, 255, 255), 50); // white
-    // colorAll(strip.Color(255, 145, 120), 50); // warm white
 }
 
+// Need us a loop!
 void loop() {
-    // strip.show();   // Not 100% sure this is needed here, but the loop seemed lonely
     if( fetchedEEPROM ){
         pushToEEPROM(); // Save Setting
     }
@@ -322,6 +313,7 @@ void loop() {
 
 
         lightBrightness = newLuxInt;
+        updateQuickSetting();
         if( newLuxInt == 0 ){
             lightOn = "false";
         }else{
@@ -345,6 +337,7 @@ void loop() {
         }
 
         luxChange = testing;
+        updateQuickSetting();
         pushToEEPROM(); // Save Setting
 
         return 1;
@@ -387,6 +380,8 @@ void loop() {
 
         strip.show();
         lightMode = newMode;
+
+        updateQuickSetting();
         pushToEEPROM(); // Save Setting
 
         return 1;
@@ -411,6 +406,7 @@ void loop() {
             return -1;
         }
 
+        updateQuickSetting();
         return 1;
     }
 // Web Functions
@@ -481,6 +477,13 @@ void loop() {
 // Persist Variables
 //
 
+
+//
+// Manage the quickSetting variable
+void updateQuickSetting(){
+    quickSetting = lightMode + "," + colorHue + "," + colorSaturation + "," + colorLightness + "," + lightBrightness + "," + luxChange;           // Comma seperated string - Mode, Hue, Saturation, Lightness, Brightness, Light Change
+    return;
+}
 
 
 
