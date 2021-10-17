@@ -11,7 +11,7 @@ The code to run our awesome IoT Chandelier.
 # Running the Firmware
 The [Particle Photon](https://www.particle.io/products/hardware/photon-wifi-dev-kit) powers the LEDs and the Particle Cloud is what we use to communicated with the device remotely.  
   
-The application is running firmware v0.7.0.  
+The application is running firmware v2.2.0.  
   
 Their online IDE allows you to get this code up and working - [build.particle.io](https://build.particle.io).
 
