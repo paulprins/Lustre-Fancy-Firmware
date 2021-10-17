@@ -40,7 +40,8 @@
 // #include "neopixel.h" // use for local build
 #include <vector>
 #include <sstream>
-#include <math.h>
+// #include <math.h>
+#include <cmath>
 #include <map>
 
 /* ======================= prototypes =============================== */
